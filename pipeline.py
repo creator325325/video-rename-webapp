@@ -1,6 +1,5 @@
 import os
 import subprocess
-import base64
 import re
 import shutil
 from pathlib import Path
@@ -66,43 +65,33 @@ def transcribe(audio_path):
 
 
 def generate_filename(transcript, frame_paths, original_name):
-    import anthropic
+    import google.generativeai as genai
+    from PIL import Image
 
-    client = anthropic.Anthropic()
+    genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+    model = genai.GenerativeModel('gemini-1.5-flash')
     ext = Path(original_name).suffix or '.mp4'
 
-    content = [{
-        "type": "text",
-        "text": f"""다음은 영상의 자막과 화면 스냅샷입니다. 영상 내용을 파악해서 의미있는 파일명을 만들어주세요.
+    prompt = f"""다음은 영상의 자막과 화면 스냅샷입니다. 영상 내용을 파악해서 의미있는 파일명을 만들어주세요.
 
 규칙:
 - 형식: 주제_세부키워드{ext}
 - 한글 사용 가능, 공백 대신 언더스코어(_)
-- 50자 이내, 특수문자 금지 (\ / : * ? " < > | 불가)
+- 50자 이내, 특수문자 금지 (\\ / : * ? " < > | 불가)
 - 파일명만 답하세요 (설명 없이, 확장자 포함)
 
 원본 파일명: {original_name}
 자막: {transcript[:3000] if transcript else '(음성 없음)'}"""
-    }]
 
+    content = [prompt]
     for frame_path in frame_paths[:6]:
         try:
-            with open(frame_path, 'rb') as f:
-                data = base64.standard_b64encode(f.read()).decode()
-            content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/jpeg", "data": data}
-            })
+            content.append(Image.open(frame_path))
         except Exception:
             pass
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=100,
-        messages=[{"role": "user", "content": content}]
-    )
-
-    new_name = response.content[0].text.strip()
+    response = model.generate_content(content)
+    new_name = response.text.strip()
     new_name = FORBIDDEN.sub('_', new_name).strip()
     if not new_name.lower().endswith(ext.lower()):
         new_name += ext
