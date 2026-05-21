@@ -83,7 +83,7 @@ def generate_filename(transcript, frame_paths, original_name):
 자막: {transcript[:3000] if transcript else '(음성 없음)'}"""
 
     parts = [prompt]
-    for frame_path in frame_paths[:6]:
+    for frame_path in frame_paths[:2]:
         try:
             with open(frame_path, 'rb') as f:
                 img_bytes = f.read()
@@ -91,10 +91,19 @@ def generate_filename(transcript, frame_paths, original_name):
         except Exception:
             pass
 
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=parts
-    )
+    import time
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=parts
+            )
+            break
+        except Exception as e:
+            if '429' in str(e) and attempt < 2:
+                time.sleep(10)
+            else:
+                raise
     new_name = response.text.strip()
     new_name = FORBIDDEN.sub('_', new_name).strip()
     if not new_name.lower().endswith(ext.lower()):
