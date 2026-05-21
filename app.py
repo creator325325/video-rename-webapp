@@ -1,16 +1,16 @@
 import streamlit as st
 import os
+import re
 import shutil
 import pandas as pd
 
-MAIN_FOLDER_ID = "1cgXDtNfQB32-YF9dEC64yzSmLnFT7bKS"
 TMP_DIR = "/tmp/video_rename"
 
 st.set_page_config(page_title="영상 자동 리네이밍", page_icon="🎬", layout="wide")
 st.title("🎬 영상 자동 리네이밍")
 st.caption("Google Drive 폴더의 영상을 자동으로 분석해 파일명을 변경합니다.")
 
-from drive_service import get_drive_service, list_subfolders, list_videos, rename_file
+from drive_service import get_drive_service, list_videos, rename_file
 
 
 @st.cache_resource
@@ -26,81 +26,94 @@ except Exception as e:
 
 if 'results' not in st.session_state:
     st.session_state.results = None
+if 'folder_id' not in st.session_state:
+    st.session_state.folder_id = None
 
 
-# ── Step 1: 폴더 선택 ─────────────────────────────────────────────────────────
-st.subheader("① 내 폴더 선택")
-
-try:
-    subfolders = list_subfolders(service, MAIN_FOLDER_ID)
-except Exception as e:
-    st.error(f"폴더 목록 불러오기 실패: {e}")
-    st.stop()
-
-if not subfolders:
-    st.warning("하위 폴더가 없습니다. 메인 폴더 안에 본인 이름으로 폴더를 만들어주세요.")
-    st.stop()
-
-folder_map = {f['name']: f['id'] for f in subfolders}
-selected_name = st.selectbox("폴더", list(folder_map.keys()), label_visibility="collapsed")
-selected_id = folder_map[selected_name]
-
-try:
-    videos = list_videos(service, selected_id)
-except Exception as e:
-    st.error(f"영상 목록 불러오기 실패: {e}")
-    st.stop()
-
-if not videos:
-    st.info("이 폴더에 영상이 없습니다. 영상을 넣고 다시 시도하세요.")
-    st.stop()
-
-st.info(f"📹 {len(videos)}개 영상 발견")
-with st.expander("목록 보기"):
-    for v in videos:
-        size_mb = int(v.get('size', 0)) / (1024 * 1024)
-        st.text(f"{v['name']}  ({size_mb:.1f} MB)")
+def extract_folder_id(url: str) -> str | None:
+    match = re.search(r'/folders/([a-zA-Z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+    match = re.search(r'id=([a-zA-Z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+    if re.fullmatch(r'[a-zA-Z0-9_-]{10,}', url.strip()):
+        return url.strip()
+    return None
 
 
-# ── Step 2: 분석 시작 ──────────────────────────────────────────────────────────
-st.divider()
-st.subheader("② 분석")
-st.caption("영상당 1~3분 소요됩니다. 탭을 닫지 마세요.")
+# ── Step 1: 폴더 URL 입력 ──────────────────────────────────────────────────────
+st.subheader("① 폴더 URL 입력")
 
-if st.button("🔍 분석 시작", type="primary"):
-    st.session_state.results = None
-    from pipeline import process_video
+folder_url = st.text_input(
+    "Google Drive 폴더 링크",
+    placeholder="https://drive.google.com/drive/folders/...",
+    label_visibility="collapsed"
+)
 
-    results = []
-    progress = st.progress(0, text="분석 준비 중...")
+if folder_url:
+    folder_id = extract_folder_id(folder_url)
+    if not folder_id:
+        st.error("올바른 Google Drive 폴더 URL이 아닙니다.")
+        st.stop()
 
-    for i, video in enumerate(videos):
-        progress.progress(i / len(videos), text=f"[{i+1}/{len(videos)}] {video['name']} 처리 중...")
-        work_dir = os.path.join(TMP_DIR, video['id'])
+    st.session_state.folder_id = folder_id
 
-        try:
-            new_name = process_video(service, video['id'], video['name'], work_dir)
-            results.append({
-                'file_id': video['id'],
-                'original_name': video['name'],
-                'new_name': new_name,
-                'apply': True,
-                'status': '✓'
-            })
-        except Exception as e:
-            results.append({
-                'file_id': video['id'],
-                'original_name': video['name'],
-                'new_name': video['name'],
-                'apply': False,
-                'status': f'실패: {str(e)[:60]}'
-            })
-        finally:
-            if os.path.exists(work_dir):
-                shutil.rmtree(work_dir, ignore_errors=True)
+    try:
+        videos = list_videos(service, folder_id)
+    except Exception as e:
+        st.error(f"폴더 접근 실패: {e}\n\n서비스 계정에 폴더 공유가 됐는지 확인하세요.")
+        st.stop()
 
-    progress.progress(1.0, text="분석 완료!")
-    st.session_state.results = results
+    if not videos:
+        st.info("이 폴더에 영상이 없습니다.")
+        st.stop()
+
+    st.info(f"📹 {len(videos)}개 영상 발견")
+    with st.expander("목록 보기"):
+        for v in videos:
+            size_mb = int(v.get('size', 0)) / (1024 * 1024)
+            st.text(f"{v['name']}  ({size_mb:.1f} MB)")
+
+    # ── Step 2: 분석 시작 ──────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("② 분석")
+    st.caption("영상당 1~3분 소요됩니다. 탭을 닫지 마세요.")
+
+    if st.button("🔍 분석 시작", type="primary"):
+        st.session_state.results = None
+        from pipeline import process_video
+
+        results = []
+        progress = st.progress(0, text="분석 준비 중...")
+
+        for i, video in enumerate(videos):
+            progress.progress(i / len(videos), text=f"[{i+1}/{len(videos)}] {video['name']} 처리 중...")
+            work_dir = os.path.join(TMP_DIR, video['id'])
+
+            try:
+                new_name = process_video(service, video['id'], video['name'], work_dir)
+                results.append({
+                    'file_id': video['id'],
+                    'original_name': video['name'],
+                    'new_name': new_name,
+                    'apply': True,
+                    'status': '✓'
+                })
+            except Exception as e:
+                results.append({
+                    'file_id': video['id'],
+                    'original_name': video['name'],
+                    'new_name': video['name'],
+                    'apply': False,
+                    'status': f'실패: {str(e)[:60]}'
+                })
+            finally:
+                if os.path.exists(work_dir):
+                    shutil.rmtree(work_dir, ignore_errors=True)
+
+        progress.progress(1.0, text="분석 완료!")
+        st.session_state.results = results
 
 
 # ── Step 3: 확인 및 적용 ────────────────────────────────────────────────────────
